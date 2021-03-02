@@ -3,9 +3,13 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdbool.h>
 
 #include "disk.h"
 #include "fs.h"
+
+int findIndex(int fd, int offset);
+void extendDataBlock(int index);
 
 typedef struct Rootdirentry* Rootdirentry_t;
 typedef struct FAT* FAT_t;
@@ -202,14 +206,142 @@ int fs_lseek(int fd, size_t offset)
     return 0;
 }
 
+int findIndex (int fd, int offset){
+    int index;
+    if (offset < 4096) index = Rootdirentries[fd].indexoffirstblock;
+    else {
+        while (offset >= 0) {
+            index = FATS[index/2048]->FAT[index%2048];
+            offset -= 4096;
+        }
+    }
+    return index;
+}
+
+void extendDataBlock(int index){
+    for (int i = 0; i < 4; i++){
+        for (int j = 0; j < 2048; j++){
+            if (!(FATS[i]->FAT[j])){
+                FATS[i]->FAT[j] = 0xFFFF;
+                FATS[index/2048]->FAT[index%2048] = i*2048+j;
+                break;
+            }
+        }
+    }
+}
+
 int fs_write(int fd, void *buf, size_t count)
 {
-	/* TODO: Phase 4 */
+    bool offset_aligned_on_beginning = false;
+    bool exactly_size_of_data = false;
+    char bounce[4096];
+	if (freedatablk*4096 + Rootdirentries[openedfile[fd]].sizeoffile - offsets[fd] < count){
+	    count = freedatablk*4096 + Rootdirentries[openedfile[fd]].sizeoffile - offsets[fd];
+	}
+    if (!(offsets[fd]%4096)) offset_aligned_on_beginning = true;
+    if (!((offsets[fd]+count)%4096)) exactly_size_of_data = true;
+    int countcopy = count;
+    int index = findIndex(openedfile[fd], offsets[fd]);
+    if (offset_aligned_on_beginning){
+        if (exactly_size_of_data){
+            while (!countcopy){
+                block_write(index, buf+count-countcopy);
+                if ((FATS[index/2048]->FAT[index%2048] == 0xFFFF) && (countcopy>4096)){
+                    extendDataBlock(index);
+                }
+                index = FATS[index/2048]->FAT[index%2048];
+                countcopy-=4096;
+            }
+        } else {
+            while (countcopy > 4096){
+                block_write(index, buf+count-countcopy);
+                if ((FATS[index/2048]->FAT[index%2048] == 0xFFFF) && (countcopy>4096)){
+                    extendDataBlock(index);
+                }
+                index = FATS[index/2048]->FAT[index%2048];
+                countcopy-=4096;
+            }
+            block_read(index, bounce);
+            memcpy(bounce, buf+count-countcopy, countcopy);
+            block_write(index, bounce);
+        }
+    } else {
+        if (offsets[fd]%4096+count<=4096){
+            block_read(index, bounce);
+            memcpy(bounce+offsets[fd]%4096, buf, countcopy);
+            block_write(index, bounce);
+        } else {
+            block_read(index, bounce);
+            memcpy(bounce+offsets[fd]%4096, buf, 4096-offsets[fd]%4096);
+            block_write(index, bounce);
+            if (FATS[index/2048]->FAT[index%2048] == 0xFFFF){
+                extendDataBlock(index);
+            }
+            index = FATS[index/2048]->FAT[index%2048];
+            countcopy-=4096-offsets[fd]%4096;
+            while (countcopy > 4096){
+                block_write(index, buf+count-countcopy);
+                if ((FATS[index/2048]->FAT[index%2048] == 0xFFFF) && (countcopy>4096)){
+                    extendDataBlock(index);
+                }
+                index = FATS[index/2048]->FAT[index%2048];
+                countcopy-=4096;
+            }
+            block_read(index, bounce);
+            memcpy(bounce, buf+count-countcopy, countcopy);
+            block_write(index, bounce);
+        }
+    }
+	return count;
 }
 
 int fs_read(int fd, void *buf, size_t count)
 {
-	/* TODO: Phase 4 */
+	bool offset_aligned_on_beginning = false;
+	bool exactly_size_of_data = false;
+	char bounce[4096];
+    if (Rootdirentries[openedfile[fd]].sizeoffile - offsets[fd] < count){
+        count = Rootdirentries[openedfile[fd]].sizeoffile - offsets[fd];
+    }
+    int countcopy = count;
+	int index = findIndex(openedfile[fd], offsets[fd]);
+	if (!(offsets[fd]%4096)) offset_aligned_on_beginning = true;
+	if (!((offsets[fd]+count)%4096)) exactly_size_of_data = true;
+	if (offset_aligned_on_beginning){
+	    if (exactly_size_of_data){
+	        while (!countcopy){
+	            block_read(index, buf+count-countcopy);
+                index = FATS[index/2048]->FAT[index%2048];
+	            countcopy-=4096;
+	        }
+	    } else {
+	        while (countcopy > 4096){
+	            block_read(index, buf+count-countcopy);
+	            index = FATS[index/2048]->FAT[index%2048];
+	            countcopy-=4096;
+	        }
+            block_read(index, bounce);
+            memcpy(buf+count-countcopy, bounce, countcopy);
+	    }
+	} else {
+	    if (offsets[fd]%4096+count<=4096){
+            block_read(index, bounce);
+            memcpy(buf, bounce+offsets[fd]%4096, countcopy);
+	    } else {
+            block_read(index, bounce);
+            index = FATS[index/2048]->FAT[index%2048];
+            memcpy(buf, bounce+offsets[fd]%4096, 4096-offsets[fd]%4096);
+            countcopy-=4096-offsets[fd]%4096;
+            while (countcopy > 4096){
+                block_read(index, buf+count-countcopy);
+                index = FATS[index/2048]->FAT[index%2048];
+                countcopy-=4096;
+            }
+            block_read(index, bounce);
+            memcpy(buf+count-countcopy, bounce, countcopy);
+	    }
+	}
+	return count;
 }
 
 int main(){
