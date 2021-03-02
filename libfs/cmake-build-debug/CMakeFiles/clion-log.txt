@@ -1,4 +1,0 @@
-/home/sparks/Downloads/CLion-2019.2.4/clion-2019.2.4/bin/cmake/linux/bin/cmake -DCMAKE_BUILD_TYPE=Debug -G "CodeBlocks - Unix Makefiles" /home/sparks/Desktop/Project3INIT/libfs
--- Configuring done
--- Generating done
--- Build files have been written to: /home/sparks/Desktop/Project3INIT/libfs/cmake-build-debug

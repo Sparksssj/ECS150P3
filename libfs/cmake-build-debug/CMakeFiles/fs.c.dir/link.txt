@@ -1,1 +1,0 @@
-/usr/bin/cc -g   CMakeFiles/fs.c.dir/disk.c.o  -o fs.c 

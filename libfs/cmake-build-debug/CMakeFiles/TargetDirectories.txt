@@ -1,3 +1,0 @@
-/home/sparks/Desktop/Project3INIT/libfs/cmake-build-debug/CMakeFiles/rebuild_cache.dir
-/home/sparks/Desktop/Project3INIT/libfs/cmake-build-debug/CMakeFiles/FS.dir
-/home/sparks/Desktop/Project3INIT/libfs/cmake-build-debug/CMakeFiles/edit_cache.dir
