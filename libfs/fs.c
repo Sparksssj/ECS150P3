@@ -40,6 +40,10 @@ struct Rootdirentry{
 Superblock_t Superblock;
 FAT_t* FATS;
 Rootdirentry_t Rootdirentries;
+int openedfile[32] = {-1};
+int offsets[32];
+int freedatablk;
+
 
 int fs_mount(const char *diskname)
 {
@@ -60,6 +64,8 @@ int fs_mount(const char *diskname)
 
     Rootdirentries = malloc(sizeof(Rootdirentry_t)*128);
 
+    freedatablk = Superblock->datablocknum -1;
+
     block_read(Superblock->fatblocknum + 1, Rootdirentries);
 
     return 0;
@@ -79,6 +85,7 @@ int fs_umount(void)
 
 int fs_info(void)
 {
+
     fprintf(stderr, "FS Info:\n");
     fprintf(stderr, "total_blk_count=%d\n", Superblock->totalblocks);
     fprintf(stderr, "fat_blk_count=%d\n", Superblock->fatblocknum);
@@ -86,15 +93,14 @@ int fs_info(void)
     fprintf(stderr, "data_blk=%d\n", Superblock->datablockindex);
     fprintf(stderr, "data_blk_count=%d\n", Superblock->datablocknum);
     fprintf(stderr, "fat_blk_count=%d\n", Superblock->fatblocknum);
-
-
-//    printf("FS Info:\n");
-//    printf("total_blk_count=%d\n", Superblock->totalblocks);
-//    printf("fat_blk_count=%d\n", Superblock->fatblocknum);
-//    printf("rdir_blk=%d\n", Superblock->rootdirindex);
-//    printf("data_blk=%d\n", Superblock->datablockindex);
-//    printf("data_blk_count=%d\n", Superblock->datablocknum);
-//    printf("fat_blk_count=%d\n", Superblock->fatblocknum);
+    fprintf(stderr, "fat_free_ratio=%d/%d\n", freedatablk ,Superblock->datablocknum);
+    int rootdirfree = 128;
+    for (int i = 0; i < 128; ++i) {
+        if (strcmp(Rootdirentries[i].filename, "")){
+            rootdirfree --;
+        }
+    }
+    fprintf(stderr, "rdir_free_ratio=%d/128\n",rootdirfree);
 
     return 0;
 
@@ -107,12 +113,14 @@ int fs_create(const char *filename)
     if (!filename) return -1;
 
     for (int i = 0; i < 128; ++i) {
-        if (Rootdirentries[i].filename[0] == 0 && Rootdirentries[i].filename[1] == 0){
+        if (!strcmp(Rootdirentries[i].filename, filename)){
+            return -1;
+        }
 
+        if (!strcmp(Rootdirentries[i].filename, "")){
             if (strlen(filename) > 16){
                 return -1;
             } else {
-
                 strncpy(Rootdirentries[i].filename, filename, 16);
                 Rootdirentries[i].sizeoffile = 0;
                 Rootdirentries[i].indexoffirstblock = 0xFFFF;
@@ -151,22 +159,47 @@ int fs_ls(void)
 
 int fs_open(const char *filename)
 {
-
+    for (int i = 0; i < 32; ++i) {
+        if (openedfile[i] == -1){
+            for (int j = 0; j < 128; ++j) {
+                if (!strcmp(Rootdirentries[j].filename, filename)){
+                    openedfile[i] = j;
+                    return i;
+                }
+            }
+        }
+    }
+    return -1;
 }
 
 int fs_close(int fd)
 {
-	/* TODO: Phase 3 */
+    if (fd > 32 || !openedfile[fd]){
+        return -1;
+    } else{
+        openedfile[fd] = 0;
+    }
+    return 0;
 }
 
 int fs_stat(int fd)
 {
-	/* TODO: Phase 3 */
+    if (fd > 32 || openedfile[fd] == -1){
+        return -1;
+    }
+    fprintf(stderr, "Size of file '%s' is %d bytes\n",
+            Rootdirentries[openedfile[fd]].filename, Rootdirentries[openedfile[fd]].sizeoffile);
+    return 0;
 }
 
 int fs_lseek(int fd, size_t offset)
 {
-	/* TODO: Phase 3 */
+    if (fd > 32 || !openedfile[fd] || Rootdirentries[openedfile[fd]].sizeoffile < offset){
+        return -1;
+    } else{
+        offsets[fd] = offset;
+    }
+    return 0;
 }
 
 int fs_write(int fd, void *buf, size_t count)
@@ -180,12 +213,25 @@ int fs_read(int fd, void *buf, size_t count)
 }
 
 int main(){
-    fs_mount("disk1.fs");
-    fs_info();
+    fs_mount("disk2.fs");
+    //fs_info();
     fs_create("testtest1.c");
     fs_create("testtest2");
     fs_create("test3");
     fs_delete("testtest2");
-    fs_ls();
+    fs_delete("test3");
+    fs_delete("testtest1.c");
+    fs_delete("test_fs.c");
+    fs_info();
+
+//
+//    fs_ls();
+//
+//    int i5 = fs_open("test3");
+//    int i1 = fs_stat(0);
+//    //int i2 = fs_stat(1);
+//    int i3=fs_close(0);
+//    //int i4=fs_close(1);
+    fs_umount();
     return 0;
 }
