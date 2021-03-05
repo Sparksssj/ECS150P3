@@ -38,7 +38,7 @@ struct Rootdirentry{
     char filename[16];
     uint32_t sizeoffile;
     uint16_t indexoffirstblock;
-    uint8_t padding[5];
+    uint8_t padding[10];
 };
 
 
@@ -69,7 +69,7 @@ int fs_mount(const char *diskname)
         FATS[i] = temp;
     }
 
-    Rootdirentries = malloc(32*128);
+    Rootdirentries = malloc(sizeof(struct Rootdirentry)*128);
 
     freedatablk = Superblock->datablocknum -1;
 
@@ -466,4 +466,5 @@ int main(){
     fs_info();
 
     fs_umount();
-}*/
+}
+*/
