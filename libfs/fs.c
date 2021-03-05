@@ -4,6 +4,9 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdbool.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 
 #include "disk.h"
 #include "fs.h"
@@ -44,8 +47,8 @@ struct Rootdirentry{
 Superblock_t Superblock;
 FAT_t* FATS;
 Rootdirentry_t Rootdirentries;
-int openedfile[32] = {-1};
-int offsets[32];
+int openedfile[32] = {[0 ... 31] = -1};
+unsigned int offsets[32];
 int freedatablk;
 
 
@@ -66,11 +69,13 @@ int fs_mount(const char *diskname)
         FATS[i] = temp;
     }
 
-    Rootdirentries = malloc(sizeof(Rootdirentry_t)*128);
+    Rootdirentries = malloc(32*128);
 
     freedatablk = Superblock->datablocknum -1;
 
     block_read(Superblock->fatblocknum + 1, Rootdirentries);
+
+   /* free(temp);*/
 
     return 0;
 }
@@ -83,28 +88,36 @@ int fs_umount(void)
 
     block_write(Superblock->fatblocknum + 1, Rootdirentries);
 
+    free(Superblock);
+    free(FATS);
+    free(Rootdirentries);
+
     block_disk_close();
     return 0;
 }
 
 int fs_info(void)
 {
-
-    fprintf(stderr, "FS Info:\n");
-    fprintf(stderr, "total_blk_count=%d\n", Superblock->totalblocks);
-    fprintf(stderr, "fat_blk_count=%d\n", Superblock->fatblocknum);
-    fprintf(stderr, "rdir_blk=%d\n", Superblock->rootdirindex);
-    fprintf(stderr, "data_blk=%d\n", Superblock->datablockindex);
-    fprintf(stderr, "data_blk_count=%d\n", Superblock->datablocknum);
-    fprintf(stderr, "fat_blk_count=%d\n", Superblock->fatblocknum);
-    fprintf(stderr, "fat_free_ratio=%d/%d\n", freedatablk ,Superblock->datablocknum);
+    int freedatablk_h = 0;
+    for (int i = 0; i < Superblock->datablocknum; i++){
+        if (!(FATS[i/2048]->FAT[i%2048])){
+            freedatablk_h++;
+        }
+    }
+    printf("FS Info:\n");
+    printf("total_blk_count=%d\n", Superblock->totalblocks);
+    printf("fat_blk_count=%d\n", Superblock->fatblocknum);
+    printf("rdir_blk=%d\n", Superblock->rootdirindex);
+    printf("data_blk=%d\n", Superblock->datablockindex);
+    printf("data_blk_count=%d\n", Superblock->datablocknum);
+    printf("fat_free_ratio=%d/%d\n", freedatablk_h ,Superblock->datablocknum);
     int rootdirfree = 128;
     for (int i = 0; i < 128; ++i) {
         if (strcmp(Rootdirentries[i].filename, "")){
             rootdirfree --;
         }
     }
-    fprintf(stderr, "rdir_free_ratio=%d/128\n",rootdirfree);
+    printf("rdir_free_ratio=%d/128\n",rootdirfree);
 
     return 0;
 
@@ -151,14 +164,14 @@ int fs_delete(const char *filename)
 
 int fs_ls(void)
 {
-	fprintf(stderr, "FS Ls:\n");
+    fprintf(stderr, "FS Ls:\n");
 
     for (int i = 0; i < 128; ++i) {
         if (strcmp(Rootdirentries[i].filename, "")){
-           fprintf(stderr, "file: %s, size: %d, data_blk: %d\n", Rootdirentries[i].filename, Rootdirentries[i].sizeoffile, Rootdirentries[i].indexoffirstblock);
+            printf("file: %s, size: %d, data_blk: %d\n", Rootdirentries[i].filename, Rootdirentries[i].sizeoffile, Rootdirentries[i].indexoffirstblock);
         }
     }
-
+    return 0;
 }
 
 int fs_open(const char *filename)
@@ -178,10 +191,11 @@ int fs_open(const char *filename)
 
 int fs_close(int fd)
 {
-    if (fd > 32 || !openedfile[fd]){
+    if (fd > 32 || openedfile[fd] == -1){
         return -1;
     } else{
-        openedfile[fd] = 0;
+        openedfile[fd] = -1;
+        offsets[fd] = 0;
     }
     return 0;
 }
@@ -191,14 +205,14 @@ int fs_stat(int fd)
     if (fd > 32 || openedfile[fd] == -1){
         return -1;
     }
-    fprintf(stderr, "Size of file '%s' is %d bytes\n",
+    printf("Size of file '%s' is %d bytes\n",
             Rootdirentries[openedfile[fd]].filename, Rootdirentries[openedfile[fd]].sizeoffile);
-    return 0;
+    return Rootdirentries[openedfile[fd]].sizeoffile;
 }
 
 int fs_lseek(int fd, size_t offset)
 {
-    if (fd > 32 || !openedfile[fd] || Rootdirentries[openedfile[fd]].sizeoffile < offset){
+    if (fd > 32 || openedfile[fd] == -1 || Rootdirentries[openedfile[fd]].sizeoffile < offset){
         return -1;
     } else{
         offsets[fd] = offset;
@@ -207,12 +221,29 @@ int fs_lseek(int fd, size_t offset)
 }
 
 int findIndex (int fd, int offset){
-    int index;
-    if (offset < 4096) index = Rootdirentries[fd].indexoffirstblock;
-    else {
-        while (offset >= 0) {
-            index = FATS[index/2048]->FAT[index%2048];
-            offset -= 4096;
+    int index = 0;
+    if (Rootdirentries[fd].indexoffirstblock != 0xFFFF){
+        if (offset < 4096){
+            index = Rootdirentries[fd].indexoffirstblock;
+        } else {
+            index = Rootdirentries[fd].indexoffirstblock;
+            while (offset >= 4096) {
+                index = FATS[index/2048]->FAT[index%2048];
+                offset -= 4096;
+            }
+        }
+    } else {
+        for (int i = 0; i < 4; i++){
+            for (int j = 0; j < 2048; j++){
+                if (!i && !j) continue;
+                if ((!FATS[i]->FAT[j])){
+                    FATS[i]->FAT[j] = 0xFFFF;
+                    index = i*2048+j;
+                    Rootdirentries[fd].indexoffirstblock = index;
+                    freedatablk--;
+                    return index;
+                }
+            }
         }
     }
     return index;
@@ -221,10 +252,11 @@ int findIndex (int fd, int offset){
 void extendDataBlock(int index){
     for (int i = 0; i < 4; i++){
         for (int j = 0; j < 2048; j++){
+            if (!i && !j) continue;
             if (!(FATS[i]->FAT[j])){
                 FATS[i]->FAT[j] = 0xFFFF;
                 FATS[index/2048]->FAT[index%2048] = i*2048+j;
-                break;
+                return;
             }
         }
     }
@@ -232,20 +264,26 @@ void extendDataBlock(int index){
 
 int fs_write(int fd, void *buf, size_t count)
 {
+    if (!buf || openedfile[fd] == -1 || fd > 31 || fd < 0){
+        return -1;
+    }
+    if (!count){
+        return count;
+    }
     bool offset_aligned_on_beginning = false;
     bool exactly_size_of_data = false;
     char bounce[4096];
-	if (freedatablk*4096 + Rootdirentries[openedfile[fd]].sizeoffile - offsets[fd] < count){
-	    count = freedatablk*4096 + Rootdirentries[openedfile[fd]].sizeoffile - offsets[fd];
-	}
+    if (freedatablk*4096 + Rootdirentries[openedfile[fd]].sizeoffile - offsets[fd] < count){
+        count = freedatablk*4096 + Rootdirentries[openedfile[fd]].sizeoffile - offsets[fd];
+    }
     if (!(offsets[fd]%4096)) offset_aligned_on_beginning = true;
     if (!((offsets[fd]+count)%4096)) exactly_size_of_data = true;
     int countcopy = count;
     int index = findIndex(openedfile[fd], offsets[fd]);
     if (offset_aligned_on_beginning){
         if (exactly_size_of_data){
-            while (!countcopy){
-                block_write(index, buf+count-countcopy);
+            while (countcopy){
+                block_write(index+Superblock->datablockindex, buf+count-countcopy);
                 if ((FATS[index/2048]->FAT[index%2048] == 0xFFFF) && (countcopy>4096)){
                     extendDataBlock(index);
                 }
@@ -254,116 +292,178 @@ int fs_write(int fd, void *buf, size_t count)
             }
         } else {
             while (countcopy > 4096){
-                block_write(index, buf+count-countcopy);
+                block_write(index+Superblock->datablockindex, buf+count-countcopy);
                 if ((FATS[index/2048]->FAT[index%2048] == 0xFFFF) && (countcopy>4096)){
                     extendDataBlock(index);
                 }
                 index = FATS[index/2048]->FAT[index%2048];
                 countcopy-=4096;
             }
-            block_read(index, bounce);
+            block_read(index+Superblock->datablockindex, bounce);
             memcpy(bounce, buf+count-countcopy, countcopy);
-            block_write(index, bounce);
+            block_write(index+Superblock->datablockindex, bounce);
         }
     } else {
         if (offsets[fd]%4096+count<=4096){
-            block_read(index, bounce);
+            block_read(index+Superblock->datablockindex, bounce);
             memcpy(bounce+offsets[fd]%4096, buf, countcopy);
-            block_write(index, bounce);
+            block_write(index+Superblock->datablockindex, bounce);
         } else {
-            block_read(index, bounce);
+            block_read(index+Superblock->datablockindex, bounce);
             memcpy(bounce+offsets[fd]%4096, buf, 4096-offsets[fd]%4096);
-            block_write(index, bounce);
+            block_write(index+Superblock->datablockindex, bounce);
             if (FATS[index/2048]->FAT[index%2048] == 0xFFFF){
                 extendDataBlock(index);
             }
             index = FATS[index/2048]->FAT[index%2048];
             countcopy-=4096-offsets[fd]%4096;
             while (countcopy > 4096){
-                block_write(index, buf+count-countcopy);
+                block_write(index+Superblock->datablockindex, buf+count-countcopy);
                 if ((FATS[index/2048]->FAT[index%2048] == 0xFFFF) && (countcopy>4096)){
                     extendDataBlock(index);
                 }
                 index = FATS[index/2048]->FAT[index%2048];
                 countcopy-=4096;
             }
-            block_read(index, bounce);
+            block_read(index+Superblock->datablockindex, bounce);
             memcpy(bounce, buf+count-countcopy, countcopy);
-            block_write(index, bounce);
+            block_write(index+Superblock->datablockindex, bounce);
         }
     }
-	return count;
+    offsets[fd]+=count;
+    if (Rootdirentries[openedfile[fd]].sizeoffile < offsets[fd]){
+        Rootdirentries[openedfile[fd]].sizeoffile = offsets[fd];
+    }
+    return count;
 }
 
 int fs_read(int fd, void *buf, size_t count)
 {
-	bool offset_aligned_on_beginning = false;
-	bool exactly_size_of_data = false;
-	char bounce[4096];
+    if (!buf || openedfile[fd] == -1 || fd > 31 || fd < 0){
+        return -1;
+    }
+    if (!count){
+        return count;
+    }
+    bool offset_aligned_on_beginning = false;
+    bool exactly_size_of_data = false;
+    char bounce[4096];
     if (Rootdirentries[openedfile[fd]].sizeoffile - offsets[fd] < count){
         count = Rootdirentries[openedfile[fd]].sizeoffile - offsets[fd];
     }
     int countcopy = count;
-	int index = findIndex(openedfile[fd], offsets[fd]);
-	if (!(offsets[fd]%4096)) offset_aligned_on_beginning = true;
-	if (!((offsets[fd]+count)%4096)) exactly_size_of_data = true;
-	if (offset_aligned_on_beginning){
-	    if (exactly_size_of_data){
-	        while (!countcopy){
-	            block_read(index, buf+count-countcopy);
+    int index = findIndex(openedfile[fd], offsets[fd]);
+    if (!(offsets[fd]%4096)) offset_aligned_on_beginning = true;
+    if (!((offsets[fd]+count)%4096)) exactly_size_of_data = true;
+    if (offset_aligned_on_beginning){
+        if (exactly_size_of_data){
+            while (countcopy){
+                block_read(index+Superblock->datablockindex, buf+count-countcopy);
                 index = FATS[index/2048]->FAT[index%2048];
-	            countcopy-=4096;
-	        }
-	    } else {
-	        while (countcopy > 4096){
-	            block_read(index, buf+count-countcopy);
-	            index = FATS[index/2048]->FAT[index%2048];
-	            countcopy-=4096;
-	        }
-            block_read(index, bounce);
+                countcopy-=4096;
+            }
+        } else {
+            while (countcopy > 4096){
+                block_read(index+Superblock->datablockindex, buf+count-countcopy);
+                index = FATS[index/2048]->FAT[index%2048];
+                countcopy-=4096;
+            }
+            block_read(index+Superblock->datablockindex, bounce);
             memcpy(buf+count-countcopy, bounce, countcopy);
-	    }
-	} else {
-	    if (offsets[fd]%4096+count<=4096){
-            block_read(index, bounce);
+        }
+    } else {
+        if (offsets[fd]%4096+count<=4096){
+            block_read(index+Superblock->datablockindex, bounce);
             memcpy(buf, bounce+offsets[fd]%4096, countcopy);
-	    } else {
-            block_read(index, bounce);
+        } else {
+            block_read(index+Superblock->datablockindex, bounce);
             index = FATS[index/2048]->FAT[index%2048];
             memcpy(buf, bounce+offsets[fd]%4096, 4096-offsets[fd]%4096);
             countcopy-=4096-offsets[fd]%4096;
             while (countcopy > 4096){
-                block_read(index, buf+count-countcopy);
+                block_read(index+Superblock->datablockindex, buf+count-countcopy);
                 index = FATS[index/2048]->FAT[index%2048];
                 countcopy-=4096;
             }
-            block_read(index, bounce);
+            block_read(index+Superblock->datablockindex, bounce);
             memcpy(buf+count-countcopy, bounce, countcopy);
-	    }
-	}
-	return count;
+        }
+    }
+    offsets[fd]+=count;
+    return count;
 }
+/*
 
 int main(){
-    fs_mount("disk2.fs");
-    //fs_info();
-    fs_create("testtest1.c");
-    fs_create("testtest2");
-    fs_create("test3");
-    fs_delete("testtest2");
-    fs_delete("test3");
-    fs_delete("testtest1.c");
-    fs_delete("test_fs.c");
+    int fd_fs = open("test-file-1", O_RDONLY);
+    struct stat st;
+    stat("test-file-1", &st);
+    char* buf = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd_fs, 0);
+    fs_mount("disk.fs");
+    fs_info();
+    fs_create("test-file-1");
+    fs_info();
+    int fd = fs_open("test-file-1");
+    int data = fs_write(fd, buf, st.st_size);
+    fs_info();
+    char buf2[st.st_size];
+    fs_lseek(fd, 0);
+    fs_read(fd, buf2, st.st_size);
     fs_info();
 
-//
-//    fs_ls();
-//
-//    int i5 = fs_open("test3");
-//    int i1 = fs_stat(0);
-//    //int i2 = fs_stat(1);
-//    int i3=fs_close(0);
-//    //int i4=fs_close(1);
+    fs_create("test-file-2");
+    fs_info();
+    fd_fs = open("test-file-2", O_RDONLY);
+    stat("test-file-2", &st);
+    buf = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd_fs, 0);
+    fd = fs_open("test-file-2");
+    fs_write(fd, buf, st.st_size);
+    fs_info();
+
+    fs_create("test-file-3");
+    fs_info();
+    fd_fs = open("test-file-3", O_RDONLY);
+    stat("test-file-3", &st);
+    buf = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd_fs, 0);
+    fd = fs_open("test-file-3");
+    fs_write(fd, buf, st.st_size);
+    fs_info();
+
     fs_umount();
-    return 0;
 }
+*/
+
+/*
+int main(){
+    int fd_fs, fd;
+    char* buf;
+    struct stat st;
+
+    fs_mount("disk.fs");
+
+    fd_fs = open("test-file-1", O_RDONLY);
+    stat("test-file-1", &st);
+    buf = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd_fs, 0);
+    fs_create("test-file-1");
+    fd = fs_open("test-file-1");
+    fs_write(fd, buf, st.st_size);
+    fs_info();
+
+    fd_fs = open("test-file-2", O_RDONLY);
+    stat("test-file-2", &st);
+    buf = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd_fs, 0);
+    fs_create("test-file-2");
+    fd = fs_open("test-file-2");
+    fs_write(fd, buf, st.st_size);
+    fs_info();
+
+    fd_fs = open("test-file-3", O_RDONLY);
+    stat("test-file-3", &st);
+    buf = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd_fs, 0);
+    fs_create("test-file-3");
+    fd = fs_open("test-file-3");
+    fs_write(fd, buf, st.st_size);
+    fs_info();
+
+    fs_umount();
+}*/
