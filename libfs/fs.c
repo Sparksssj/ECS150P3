@@ -49,39 +49,83 @@ FAT_t* FATS;
 Rootdirentry_t Rootdirentries;
 int openedfile[32] = {[0 ... 31] = -1};
 unsigned int offsets[32];
-int freedatablk;
+bool mounted = false;
 
 
 int fs_mount(const char *diskname)
 {
     if (!diskname) return -1;
 
-    block_disk_open(diskname);
+
+    if (block_disk_open(diskname))
+        return -1;
     Superblock = malloc(sizeof *Superblock);
 
     block_read(0, Superblock);
 
+    if (Superblock->signiture != 6000536558536704837 || Superblock->totalblocks != block_disk_count()){
+        return -1;
+    }
+
     FATS = malloc(sizeof(FAT_t) * Superblock->fatblocknum);
 
-    FAT_t temp = malloc(sizeof *temp);
-    for (int i = 0; i < Superblock->fatblocknum; ++i) {
-        block_read(i+1, temp);
-        FATS[i] = temp;
+    if (Superblock->fatblocknum == 1){
+        FAT_t temp1 = malloc(sizeof *temp1);
+        block_read(1, temp1);
+        FATS[0] = temp1;
+
+    } else if (Superblock->fatblocknum == 2){
+        FAT_t temp1 = malloc(sizeof *temp1);
+        FAT_t temp2 = malloc(sizeof *temp2);
+        block_read(1, temp1);
+        block_read(2, temp2);
+        FATS[0] = temp1;
+        FATS[1] = temp2;
+
+    } else if (Superblock->fatblocknum == 3){
+        FAT_t temp1 = malloc(sizeof *temp1);
+        FAT_t temp2 = malloc(sizeof *temp2);
+        FAT_t temp3 = malloc(sizeof *temp3);
+        block_read(1, temp1);
+        block_read(2, temp2);
+        block_read(3, temp3);
+        FATS[0] = temp1;
+        FATS[1] = temp2;
+        FATS[2] = temp3;
+
+
+    } else if (Superblock->fatblocknum == 4) {
+        FAT_t temp1 = malloc(sizeof *temp1);
+        FAT_t temp2 = malloc(sizeof *temp2);
+        FAT_t temp3 = malloc(sizeof *temp3);
+        FAT_t temp4 = malloc(sizeof *temp4);
+        block_read(1, temp1);
+        block_read(2, temp2);
+        block_read(3, temp3);
+        block_read(4, temp4);
+        FATS[0] = temp1;
+        FATS[1] = temp2;
+        FATS[2] = temp3;
+        FATS[3] = temp4;
     }
+
+
+    FATS[0]->FAT[0] = 0XFFFF;
+
 
     Rootdirentries = malloc(sizeof(struct Rootdirentry)*128);
 
-    freedatablk = Superblock->datablocknum -1;
-
     block_read(Superblock->fatblocknum + 1, Rootdirentries);
 
-   /* free(temp);*/
+    /* free(temp);*/
+    mounted = true;
 
     return 0;
 }
 
 int fs_umount(void)
 {
+    if (!mounted) return -1;
     for (int i = 0; i < Superblock->fatblocknum; ++i) {
         block_write(i+1, FATS[i]);
     }
@@ -92,12 +136,19 @@ int fs_umount(void)
     free(FATS);
     free(Rootdirentries);
 
-    block_disk_close();
+    for (int i = 0; i < 32; ++i) {
+        if (openedfile[i] != -1) return -1;
+    }
+
+    if (block_disk_close() == -1) return -1;
+    mounted = false;
     return 0;
 }
 
 int fs_info(void)
 {
+    if (!mounted) return -1;
+
     int freedatablk_h = 0;
     for (int i = 0; i < Superblock->datablocknum; i++){
         if (!(FATS[i/2048]->FAT[i%2048])){
@@ -127,7 +178,7 @@ int fs_info(void)
 
 int fs_create(const char *filename)
 {
-    if (!filename) return -1;
+    if (!filename || !mounted) return -1;
 
     for (int i = 0; i < 128; ++i) {
         if (!strcmp(Rootdirentries[i].filename, filename)){
@@ -151,9 +202,24 @@ int fs_create(const char *filename)
 
 int fs_delete(const char *filename)
 {
-    if (!filename) return -1;
+    if (!filename || !mounted || strlen(filename) > 16) return -1;
     for (int i = 0; i < 128; ++i) {
         if (!strcmp(Rootdirentries[i].filename, filename)){
+            for (int j = 0; j < 32; j++){
+                if (openedfile[j] == i){
+                    return -1;
+                }
+            }
+            uint16_t currentfat = Rootdirentries->indexoffirstblock;
+            while (currentfat != 0xFFFF){
+                uint16_t temp;
+                temp = FATS[currentfat/2048]->FAT[currentfat%2048];
+                FATS[currentfat/2048]->FAT[currentfat%2048] = 0;
+
+                currentfat = temp;
+            }
+            //block_write(Rootdirentries[i].indexoffirstblock+Superblock->datablockindex, bounce);
+            FATS[(Rootdirentries[i].indexoffirstblock)/2048]->FAT[(Rootdirentries[i].indexoffirstblock)%2048] = 0;
             strcpy(Rootdirentries[i].filename, "");
             Rootdirentries[i].indexoffirstblock = 0;
             return 0;
@@ -164,7 +230,10 @@ int fs_delete(const char *filename)
 
 int fs_ls(void)
 {
-    fprintf(stderr, "FS Ls:\n");
+    if (!mounted){
+        return -1;
+    }
+    printf("FS Ls:\n");
 
     for (int i = 0; i < 128; ++i) {
         if (strcmp(Rootdirentries[i].filename, "")){
@@ -176,6 +245,9 @@ int fs_ls(void)
 
 int fs_open(const char *filename)
 {
+    if (!mounted || strlen(filename) > 16 || !filename){
+        return -1;
+    }
     for (int i = 0; i < 32; ++i) {
         if (openedfile[i] == -1){
             for (int j = 0; j < 128; ++j) {
@@ -191,7 +263,7 @@ int fs_open(const char *filename)
 
 int fs_close(int fd)
 {
-    if (fd > 32 || openedfile[fd] == -1){
+    if (fd > 31 || fd < 0 || openedfile[fd] == -1 || !mounted){
         return -1;
     } else{
         openedfile[fd] = -1;
@@ -202,17 +274,17 @@ int fs_close(int fd)
 
 int fs_stat(int fd)
 {
-    if (fd > 32 || openedfile[fd] == -1){
+    if (fd > 31 || fd < 0 || openedfile[fd] == -1 || !mounted){
         return -1;
     }
     printf("Size of file '%s' is %d bytes\n",
-            Rootdirentries[openedfile[fd]].filename, Rootdirentries[openedfile[fd]].sizeoffile);
+           Rootdirentries[openedfile[fd]].filename, Rootdirentries[openedfile[fd]].sizeoffile);
     return Rootdirentries[openedfile[fd]].sizeoffile;
 }
 
 int fs_lseek(int fd, size_t offset)
 {
-    if (fd > 32 || openedfile[fd] == -1 || Rootdirentries[openedfile[fd]].sizeoffile < offset){
+    if (fd > 31 || fd < 0 || openedfile[fd] == -1 || Rootdirentries[openedfile[fd]].sizeoffile < offset || !mounted){
         return -1;
     } else{
         offsets[fd] = offset;
@@ -240,7 +312,6 @@ int findIndex (int fd, int offset){
                     FATS[i]->FAT[j] = 0xFFFF;
                     index = i*2048+j;
                     Rootdirentries[fd].indexoffirstblock = index;
-                    freedatablk--;
                     return index;
                 }
             }
@@ -264,17 +335,33 @@ void extendDataBlock(int index){
 
 int fs_write(int fd, void *buf, size_t count)
 {
-    if (!buf || openedfile[fd] == -1 || fd > 31 || fd < 0){
+    if (!buf || openedfile[fd] == -1 || fd > 31 || fd < 0 || !mounted){
         return -1;
     }
     if (!count){
         return count;
     }
+    unsigned int freedatablk = 0;
+    for (int i = 0; i < Superblock->datablocknum; i++){
+        if (!(FATS[i/2048]->FAT[i%2048])){
+            freedatablk++;
+        }
+    }
     bool offset_aligned_on_beginning = false;
     bool exactly_size_of_data = false;
     char bounce[4096];
-    if (freedatablk*4096 + Rootdirentries[openedfile[fd]].sizeoffile - offsets[fd] < count){
-        count = freedatablk*4096 + Rootdirentries[openedfile[fd]].sizeoffile - offsets[fd];
+    if (Rootdirentries[fd].indexoffirstblock == 0xFFFF){
+        if (freedatablk * 4096 < count){
+            count = freedatablk*4096;
+        }
+    } else {
+        unsigned int minus = Rootdirentries[openedfile[fd]].sizeoffile%4096;
+        if (Rootdirentries[openedfile[fd]].sizeoffile%4096 == 0){
+            minus = 4096;
+        }
+        if (freedatablk * 4096 + Rootdirentries[openedfile[fd]].sizeoffile - offsets[fd] + 4096 - minus < count) {
+            count = freedatablk * 4096 + Rootdirentries[openedfile[fd]].sizeoffile - offsets[fd] + 4096 - minus;
+        }
     }
     if (!(offsets[fd]%4096)) offset_aligned_on_beginning = true;
     if (!((offsets[fd]+count)%4096)) exactly_size_of_data = true;
@@ -339,7 +426,7 @@ int fs_write(int fd, void *buf, size_t count)
 
 int fs_read(int fd, void *buf, size_t count)
 {
-    if (!buf || openedfile[fd] == -1 || fd > 31 || fd < 0){
+    if (!buf || openedfile[fd] == -1 || fd > 31 || fd < 0 || !mounted){
         return -1;
     }
     if (!count){
@@ -392,79 +479,18 @@ int fs_read(int fd, void *buf, size_t count)
     offsets[fd]+=count;
     return count;
 }
-/*
-
-int main(){
-    int fd_fs = open("test-file-1", O_RDONLY);
-    struct stat st;
-    stat("test-file-1", &st);
-    char* buf = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd_fs, 0);
-    fs_mount("disk.fs");
-    fs_info();
-    fs_create("test-file-1");
-    fs_info();
-    int fd = fs_open("test-file-1");
-    int data = fs_write(fd, buf, st.st_size);
-    fs_info();
-    char buf2[st.st_size];
-    fs_lseek(fd, 0);
-    fs_read(fd, buf2, st.st_size);
-    fs_info();
-
-    fs_create("test-file-2");
-    fs_info();
-    fd_fs = open("test-file-2", O_RDONLY);
-    stat("test-file-2", &st);
-    buf = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd_fs, 0);
-    fd = fs_open("test-file-2");
-    fs_write(fd, buf, st.st_size);
-    fs_info();
-
-    fs_create("test-file-3");
-    fs_info();
-    fd_fs = open("test-file-3", O_RDONLY);
-    stat("test-file-3", &st);
-    buf = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd_fs, 0);
-    fd = fs_open("test-file-3");
-    fs_write(fd, buf, st.st_size);
-    fs_info();
-
-    fs_umount();
-}
-*/
-
-/*
-int main(){
-    int fd_fs, fd;
-    char* buf;
-    struct stat st;
-
-    fs_mount("disk.fs");
-
-    fd_fs = open("test-file-1", O_RDONLY);
-    stat("test-file-1", &st);
-    buf = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd_fs, 0);
-    fs_create("test-file-1");
-    fd = fs_open("test-file-1");
-    fs_write(fd, buf, st.st_size);
-    fs_info();
-
-    fd_fs = open("test-file-2", O_RDONLY);
-    stat("test-file-2", &st);
-    buf = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd_fs, 0);
-    fs_create("test-file-2");
-    fd = fs_open("test-file-2");
-    fs_write(fd, buf, st.st_size);
-    fs_info();
-
-    fd_fs = open("test-file-3", O_RDONLY);
-    stat("test-file-3", &st);
-    buf = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd_fs, 0);
-    fs_create("test-file-3");
-    fd = fs_open("test-file-3");
-    fs_write(fd, buf, st.st_size);
-    fs_info();
-
-    fs_umount();
-}
-*/
+//
+//int main(){
+//    int fd_fs;
+//    struct stat st;
+//    fd_fs = open("test_fs.c", O_RDONLY);
+//    stat("test_fs.c", &st);
+//    char* buf = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd_fs, 0);
+//    fs_mount("disk.fs");
+//    fs_create("test_fs");
+//    int fd = fs_open("test_fs");
+//    fs_write(fd, buf, st.st_size);
+//    fs_close(fd);
+//    fs_delete("test_fs");
+//    fs_umount();
+//}
